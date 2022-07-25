@@ -1,4 +1,4 @@
-import numpy as np
+import math
 from tqdm import tqdm 
 import time
 import matplotlib.pyplot as plt
@@ -21,29 +21,33 @@ def straight_line_forward_example():
     zs = [0.00, 0.025, 0.05]
 
     # widths of the 3 planes perpendicular to the optical axis (x-direction)
-    widths = [0.004, 0.2, 0.004]
+    widths = [0.2, 0.2, 0.004]
 
     # discretize the 3 planes
     xs = [torch.arange(-w/2, w/2+1e-12, dx, dtype=torch.double).to(device) for w in widths]
 
     # initialize field at point source
-    EA=torch.zeros(len(xs[0]), dtype=torch.cdouble).to(device)
-    EA[int(len(EA)/2)]=1e9 # center element is point source, 1 billion photons.
+    # Plane A has a non-zero DC component (ambient light) plus a point source twice
+    # as strong as the DC component at the center of the plane.
+    EA=torch.full((len(xs[0]),1), 1e9/2.0, dtype=torch.cdouble).squeeze().to(device)
+    EA[int(len(EA)/2)] *= 2 # center element is point source, 1 billion photons.
 
     # Test 1: Directly from point A -> plane C
     print("Propagating A->C...")
     EC1, tm = rsd_forward(zs[0], xs[0], EA, zs[2], xs[2], lam, dx)
     print(f"time to propagate A->C: {tm:.3f}s")
-    plot(list(zip(['A', 'C'], [zs[0], zs[2]], [widths[0], widths[2]], [xs[0], xs[2]], [[EA], [EC1]])))
+    plot(list(zip(['A', 'C'], [zs[0], zs[2]], [widths[0], widths[2]], [xs[0], xs[2]], [[EA], [EC1]])), 'rsd_poisson1.png')
     torch.save(EC1, 'EC1.pt')
 
     # Test 2: point A -> plane B, then plane B -> plane C
     print("Propagating A->B...")
     EB, tm_ab = rsd_forward(zs[0], xs[0], EA, zs[1], xs[1], lam, dx)
     print(f"time to propagate A->B: {tm_ab:.3f}s")
+    torch.save(EB, 'EB.pt')
 
     # add poisson noise to B
     EBn = add_poisson_noise(EB)
+    torch.save(EBn, 'EBn.pt')
 
     print("Propagating B->C...")
     EC2, tm_bc = rsd_forward(zs[1], xs[1], EB, zs[2], xs[2], lam, dx)
@@ -53,13 +57,14 @@ def straight_line_forward_example():
     print(f"time to propagate Bn->C: {tm_bc:.3f}s")
 
     torch.save(EC2, 'EC2.pt')
-    plot(list(zip(['A', 'B', 'C'], zs, widths, xs, [[EA], [EBn, EB], [EC2n, EC2]])))
+    torch.save(EC2n, 'EC2n.pt')
+    plot(list(zip(['A', 'B', 'C'], zs, widths, xs, [[EA], [EBn, EB], [EC2n, EC2]])), 'rsd_poisson2.png')
 
 def rsd_forward(z1, x1, E1, z2, x2, lam, dx, debug=False):
-    k = 2 * np.pi / lam # 2pi/lambda term in exponent
+    k = 2 * math.pi / lam # 2pi/lambda term in exponent
     E2 = torch.zeros(len(x2), dtype=torch.cdouble).to(device)
     z_dist = z2-z1
-    z_dist_sqr = np.square(z_dist)
+    z_dist_sqr = z_dist*z_dist
 
     # propagation is a nested for loop (from every point in source to every point in destination)
     # Nesting order of the two loops is arbitrary (both give same ansswer), 
@@ -88,27 +93,28 @@ def add_poisson_noise(E):
     ret = torch.polar(r, theta)
     return ret
 
-def plot(planes):
+def plot(planes, fname):
     fig, ax = plt.subplots(1,len(planes), figsize=(4.75*len(planes), 4*2))
     for p in range(len(planes)):
         nm, dist, width, x, E = planes[p]        
         plot_intensity(ax[p], x, E, f'Intensity at {nm} (z={dist*100}cm, w={width*100}cm)')
     plt.tight_layout()
-    plt.show()
+    plt.savefig(fname)
+    # plt.show()
 
 def plot_intensity(ax, x, E, title):
     if len(E) == 1:
         R = torch.abs(E[0])
         R = R / torch.amax(R)
-        ax.plot(x.cpu()*1000,R.cpu())
-        ax.legend(['with noise', 'without noise'])
+        ax.plot(x.cpu()*1000,R.cpu(),color='r')
+        ax.legend(['without noise'])
     else:
         Rn = torch.abs(E[0])
         R = torch.abs(E[1])
         Rn = Rn / torch.amax(R) # normalize with respect to the field with no noise
         R = R / torch.amax(R)
-        ax.plot(x.cpu()*1000,Rn.cpu())
-        ax.plot(x.cpu()*1000,R.cpu())
+        ax.plot(x.cpu()*1000,Rn.cpu(),color='b',linewidth=3.5)
+        ax.plot(x.cpu()*1000,R.cpu(),color='r',linewidth=1.5)
         ax.legend(['with noise', 'without noise'])
     ax.set_title(title); 
     ax.set_xlabel('x position [millimeters]'); 
